@@ -9,7 +9,7 @@ The interface is wired to the real integrations. It displays a category only aft
 - Offline domain, parser, pipeline, adapter, and UI tests run with the existing Python 3.14.4 environment.
 - A real local Decider inference was reported successful on October 20 through the reusable example using synthetic evidence: `/health` returned `ok`, `POST /v1/systemone` returned HTTP 200, and the typed choice was `suspicious`. Available RAM fell to about 1.04 GiB at 93.5% load; the server was then stopped and no listener remained. This verifies the example's Decider call, not another safe startup or the complete UI flow. Do not restart without a fresh resource review and explicit approval.
 - The real Bedrock report and complete Streamlit-to-Decider-to-Bedrock flow remain unverified. Bedrock use may incur charges. Under the current zero-budget constraint, do not submit an analysis that invokes Bedrock unless a cost-free entitlement with a hard zero-cost limit is confirmed and a live call is separately authorized. The hackathon terms list AWS credits as winner prizes, not participant compute credits or a participant sandbox.
-- A local Git repository has been initialized and the exact 41-file publication manifest is staged for review; there is no commit or remote, and nothing has been published.
+- Public source repository: [Mark4298/phishpilot-strands-decider-2b](https://github.com/Mark4298/phishpilot-strands-decider-2b). The reviewed 41-file source snapshot was published at commit `fe3980c6725270c095281c7a9df712300b9c1e13`. The standalone real Decider inference is verified; the complete Streamlit-to-Decider-to-Bedrock flow remains unverified.
 
 ## Local launch
 
