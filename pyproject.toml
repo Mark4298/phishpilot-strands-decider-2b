@@ -1,0 +1,20 @@
+[project]
+name = "phishpilot"
+version = "0.1.0"
+description = "Evidence-aware phishing triage demo using Strands Decider 2B and Amazon Bedrock"
+requires-python = ">=3.12,<3.15"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+  "integration: requires a live local Strands Decider service or AWS Bedrock access",
+  "slow: potentially slow or resource intensive",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

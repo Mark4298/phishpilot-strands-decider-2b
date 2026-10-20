@@ -1,0 +1,36 @@
+.env
+.env.*
+!.env.example
+.aws/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.streamlit/secrets.toml
+*.log
+*.pem
+*.p12
+*.pfx
+*.key
+.DS_Store
+Thumbs.db
+models/
+checkpoints/
+.huggingface/
+.cache/
+# Model weight files should not be committed even if copied outside a cache directory.
+*.safetensors
+*.gguf
+*.pt
+*.pth
+pytorch_model*.bin
+# Local dependency-resolution/install diagnostics; do not publish environment-specific output.
+/decider-resolution-retry.json
+/full-resolution.json
+/install-report.json
+/typer-resolution.json

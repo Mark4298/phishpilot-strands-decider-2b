@@ -1,0 +1,9 @@
+# Starter constraints only; verify current official installation instructions in prompt 01.
+# After a successful smoke test, write an exact tested requirements lock file.
+strands-agents
+strands-decider
+streamlit
+boto3
+requests
+pydantic>=2,<3
+python-dotenv
