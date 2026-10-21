@@ -11,6 +11,8 @@ from inspect import signature
 from typing import Any
 from unittest.mock import patch
 
+from botocore.exceptions import ClientError, ReadTimeoutError
+
 from phishpilot.domain.models import (
     DeciderDecision,
     EvidenceReport,
@@ -23,6 +25,7 @@ from phishpilot.domain.models import (
 from phishpilot.evidence.email_parser import extract_email_evidence
 from phishpilot.integrations.bedrock_reporter import (
     DEFAULT_MAX_OUTPUT_TOKENS,
+    DEFAULT_TIMEOUT_SECONDS,
     MAX_CONTEXT_BYTES,
     SYSTEM_PROMPT,
     BedrockReportClient,
@@ -178,7 +181,7 @@ class BedrockReporterProtocolTests(unittest.TestCase):
             {"model_id": "model id with spaces"},
             {"region": "not a region"},
             {"timeout_seconds": float("inf")},
-            {"timeout_seconds": 121},
+            {"timeout_seconds": 3601},
             {"max_output_tokens": 0},
             {"max_output_tokens": 4097},
             {"max_output_tokens": True},
@@ -189,10 +192,53 @@ class BedrockReporterProtocolTests(unittest.TestCase):
                 options.update(config)
                 BedrockReportClient(**options)
 
+    def test_default_read_timeout_is_3600_and_environment_override_is_bounded(self) -> None:
+        self.assertEqual(DEFAULT_TIMEOUT_SECONDS, 3600.0)
+        received: list[float] = []
+
+        def factory(
+            _model_id: str,
+            _region: str,
+            timeout: float,
+            _max_output_tokens: int,
+            _api_key: str,
+        ) -> _FixtureAgent:
+            received.append(timeout)
+            return _FixtureAgent()
+
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ["AWS_BEARER_TOKEN_BEDROCK"] = "offline-test-key"
+            default_client = BedrockReportClient(
+                model_id="example-model",
+                region="ap-southeast-2",
+                agent_factory=factory,
+            )
+            self.assertTrue(default_client.generate(evidence(), decision()).available)
+
+        with patch.dict(
+            os.environ,
+            {
+                "AWS_BEARER_TOKEN_BEDROCK": "offline-test-key",
+                "PHISHPILOT_BEDROCK_TIMEOUT_SECONDS": "2400",
+            },
+            clear=True,
+        ):
+            configured_client = BedrockReportClient(
+                model_id="example-model",
+                region="ap-southeast-2",
+                agent_factory=factory,
+            )
+            self.assertTrue(configured_client.generate(evidence(), decision()).available)
+
+        self.assertEqual(received, [3600.0, 2400.0])
+        with patch.dict(os.environ, {"PHISHPILOT_BEDROCK_TIMEOUT_SECONDS": "3601"}):
+            with self.assertRaises(ValueError):
+                BedrockReportClient(model_id="example-model", region="ap-southeast-2")
+
     def test_invalid_environment_timeout_and_output_limit_are_rejected(self) -> None:
         invalid_environment = (
             {"PHISHPILOT_BEDROCK_TIMEOUT_SECONDS": "nan"},
-            {"PHISHPILOT_BEDROCK_TIMEOUT_SECONDS": "121"},
+            {"PHISHPILOT_BEDROCK_TIMEOUT_SECONDS": "3601"},
             {"PHISHPILOT_BEDROCK_MAX_TOKENS": "many"},
             {"PHISHPILOT_BEDROCK_MAX_TOKENS": "4097"},
         )
@@ -263,7 +309,7 @@ class BedrockReporterProtocolTests(unittest.TestCase):
             _create_strands_agent(
                 "amazon.nova-micro-v1:0",
                 "ap-southeast-2",
-                45.0,
+                DEFAULT_TIMEOUT_SECONDS,
                 150,
                 "test-only-api-key",
             )
@@ -273,20 +319,154 @@ class BedrockReporterProtocolTests(unittest.TestCase):
         self.assertEqual(kwargs["model_id"], "amazon.nova-micro-v1:0")
         self.assertEqual(kwargs["region_name"], "ap-southeast-2")
         self.assertEqual(kwargs["max_tokens"], 150)
+        self.assertEqual(kwargs["boto_client_config"].connect_timeout, 5.0)
+        self.assertEqual(kwargs["boto_client_config"].read_timeout, 3600.0)
+        self.assertEqual(kwargs["boto_client_config"].retries["total_max_attempts"], 1)
         self.assertEqual(agent_class.call_args.kwargs["tools"], [])
         self.assertFalse(agent_class.call_args.kwargs["load_tools_from_directory"])
 
     def test_provider_failure_returns_unavailable_without_provider_details(self) -> None:
-        def failed_factory(*args: Any) -> _FixtureAgent:
-            raise RuntimeError(f"provider details included key {args[-1]}")
+        message_marker = "SYNTHETIC_PROVIDER_MESSAGE_MUST_NOT_BE_LOGGED"
+        secret_marker = "SYNTHETIC_BEARER_SECRET_MUST_NOT_BE_LOGGED"
 
-        result = BedrockReportClient(
-            model_id="m", region="us-east-1", agent_factory=failed_factory
-        ).generate(evidence(), decision())
+        def failed_factory(*args: Any) -> _FixtureAgent:
+            raise RuntimeError(f"{message_marker}; key={args[-1]}; secret={secret_marker}")
+
+        with self.assertLogs("phishpilot.integrations.bedrock_reporter", level="WARNING") as logs:
+            result = BedrockReportClient(
+                model_id="m", region="us-east-1", agent_factory=failed_factory
+            ).generate(evidence(), decision())
+
         self.assertFalse(result.available)
         self.assertEqual(result.error_code, "report_unavailable")
-        self.assertNotIn("sensitive", result.error_message or "")
-        self.assertNotIn("unit-test-only-token", result.error_message or "")
+        self.assertEqual(
+            result.error_message,
+            "Bedrock report generation failed; the validated evidence and "
+            "Decider decision remain available.",
+        )
+        diagnostic = "\n".join(logs.output)
+        self.assertIn("exception_type=RuntimeError", diagnostic)
+        for forbidden in (message_marker, secret_marker, "unit-test-token-only"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, diagnostic)
+
+    def test_chained_client_error_logs_only_sanitized_code_and_status(self) -> None:
+        message_marker = "SYNTHETIC_AWS_MESSAGE_MUST_NOT_BE_LOGGED"
+        secret_marker = "SYNTHETIC_SECRET_MUST_NOT_BE_LOGGED"
+        email_marker = "SYNTHETIC_EMAIL_CONTENT_MUST_NOT_BE_LOGGED"
+        client_error = ClientError(
+            {
+                "Error": {"Code": "AccessDeniedException", "Message": message_marker},
+                "ResponseMetadata": {"HTTPStatusCode": 403},
+            },
+            "Converse",
+        )
+
+        def failed_agent(prompt: str) -> Any:
+            try:
+                raise client_error
+            except ClientError as cause:
+                raise RuntimeError(
+                    f"{message_marker}; {secret_marker}; {email_marker}; prompt={prompt}"
+                ) from cause
+
+        with self.assertLogs("phishpilot.integrations.bedrock_reporter", level="WARNING") as logs:
+            result = BedrockReportClient(
+                model_id="m",
+                region="ap-southeast-2",
+                agent_factory=lambda *_args: failed_agent,
+            ).generate(evidence(email_marker), decision())
+
+        self.assertFalse(result.available)
+        diagnostic = "\n".join(logs.output)
+        self.assertIn("exception_type=RuntimeError", diagnostic)
+        self.assertIn("aws_error_code=AccessDeniedException", diagnostic)
+        self.assertIn("aws_http_status=403", diagnostic)
+        for forbidden in (message_marker, secret_marker, email_marker, "prompt="):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, diagnostic)
+
+    def test_padded_aws_error_code_is_trimmed_and_message_secret_is_not_logged(self) -> None:
+        secret_marker = "SYNTHETIC_BEARER_SECRET_MUST_NOT_BE_LOGGED"
+        message_marker = "SYNTHETIC_AWS_MESSAGE_MUST_NOT_BE_LOGGED"
+        client_error = ClientError(
+            {
+                "Error": {
+                    "Code": "  SyntheticValidationException  ",
+                    "Message": f"{message_marker}; {secret_marker}",
+                },
+                "ResponseMetadata": {"HTTPStatusCode": 400},
+            },
+            "Converse",
+        )
+
+        def failed_agent(_prompt: str) -> Any:
+            raise client_error
+
+        with self.assertLogs("phishpilot.integrations.bedrock_reporter", level="WARNING") as logs:
+            result = BedrockReportClient(
+                model_id="m",
+                region="ap-southeast-2",
+                agent_factory=lambda *_args: failed_agent,
+            ).generate(evidence(), decision())
+
+        self.assertFalse(result.available)
+        diagnostic = "\n".join(logs.output)
+        self.assertIn("exception_type=ClientError", diagnostic)
+        self.assertIn("aws_error_code=SyntheticValidationException", diagnostic)
+        self.assertIn("aws_http_status=400", diagnostic)
+        self.assertNotIn(secret_marker, diagnostic)
+        self.assertNotIn(message_marker, diagnostic)
+
+    def test_read_timeout_is_classified_without_logging_exception_text(self) -> None:
+        secret_marker = "SYNTHETIC_TIMEOUT_SECRET_MUST_NOT_BE_LOGGED"
+        endpoint_marker = "SYNTHETIC_ENDPOINT_MUST_NOT_BE_LOGGED"
+        timeout = ReadTimeoutError(endpoint_url=endpoint_marker)
+        timeout.args = (secret_marker,)
+
+        def failed_agent(_prompt: str) -> Any:
+            raise timeout
+
+        with self.assertLogs("phishpilot.integrations.bedrock_reporter", level="WARNING") as logs:
+            result = BedrockReportClient(
+                model_id="m",
+                region="ap-southeast-2",
+                agent_factory=lambda *_args: failed_agent,
+            ).generate(evidence(), decision())
+
+        self.assertFalse(result.available)
+        diagnostic = "\n".join(logs.output)
+        self.assertIn("exception_type=ReadTimeoutError", diagnostic)
+        self.assertIn("failure_category=timeout", diagnostic)
+        self.assertNotIn(secret_marker, diagnostic)
+        self.assertNotIn(endpoint_marker, diagnostic)
+
+    def test_aws_model_timeout_code_is_classified_without_logging_message(self) -> None:
+        message_marker = "SYNTHETIC_MODEL_TIMEOUT_MESSAGE_MUST_NOT_BE_LOGGED"
+        client_error = ClientError(
+            {
+                "Error": {"Code": "ModelTimeoutException", "Message": message_marker},
+                "ResponseMetadata": {"HTTPStatusCode": 504},
+            },
+            "Converse",
+        )
+
+        def failed_agent(_prompt: str) -> Any:
+            raise client_error
+
+        with self.assertLogs("phishpilot.integrations.bedrock_reporter", level="WARNING") as logs:
+            result = BedrockReportClient(
+                model_id="m",
+                region="ap-southeast-2",
+                agent_factory=lambda *_args: failed_agent,
+            ).generate(evidence(), decision())
+
+        self.assertFalse(result.available)
+        diagnostic = "\n".join(logs.output)
+        self.assertIn("failure_category=timeout", diagnostic)
+        self.assertIn("aws_error_code=ModelTimeoutException", diagnostic)
+        self.assertIn("aws_http_status=504", diagnostic)
+        self.assertNotIn(message_marker, diagnostic)
 
     def test_malformed_or_oversized_response_fails_closed(self) -> None:
         for response in (

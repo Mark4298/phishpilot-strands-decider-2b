@@ -36,8 +36,8 @@ $env:BEDROCK_MODEL_ID = "amazon.nova-micro-v1:0"
 $env:AWS_REGION = "ap-southeast-2"
 $env:PHISHPILOT_MAX_TEXT_CHARS = "20000"
 $env:PHISHPILOT_DECIDER_TIMEOUT_SECONDS = "60"
-$env:PHISHPILOT_BEDROCK_TIMEOUT_SECONDS = "45"
-$env:PHISHPILOT_BEDROCK_MAX_TOKENS = "150"
+$env:PHISHPILOT_BEDROCK_TIMEOUT_SECONDS = "3600"
+$env:PHISHPILOT_BEDROCK_MAX_TOKENS = "500"
 $env:PHISHPILOT_MIN_DECIDER_CONFIDENCE = "0.55"
 $env:PHISHPILOT_MIN_DECIDER_MARGIN = "0.05"
 & .\.venv\Scripts\streamlit.exe run app.py --server.address 127.0.0.1
@@ -62,7 +62,7 @@ they do not establish that a fresh dependency resolution will reproduce it.
 
 The reporter uses the short-term Amazon Bedrock API key supplied to the running process as `AWS_BEARER_TOKEN_BEDROCK`; the installed Strands `BedrockModel(api_key=...)` path sends it as bearer authentication. The reporter does not accept the standard AWS credential chain as a substitute when this API-key mode is selected. Never put the key in `.env`, `.env.example`, source, command history, or documentation. Supply it through a secure method to the same process that runs the application. Short-term keys are region-bound and expire with the session (up to 12 hours); generate/use one for `ap-southeast-2`. The app asks for acknowledgement before each analysis because Bedrock usage may consume AWS credits or incur charges. No credentials or AWS settings are created by project setup.
 
-`PHISHPILOT_BEDROCK_TIMEOUT_SECONDS` accepts 1–120 seconds (default 45). `PHISHPILOT_BEDROCK_MAX_TOKENS` accepts 1–4096 output tokens (default 150). Both settings are validated; invalid values fail closed. The report agent has no tools, and each report call constructs a fresh agent so an expiring bearer key is not cached across reports.
+`PHISHPILOT_BEDROCK_TIMEOUT_SECONDS` configures the Botocore read timeout and accepts 1–3600 seconds (default 3600); the connection timeout remains 5 seconds. The SDK is configured for one total attempt with no retries. `PHISHPILOT_BEDROCK_MAX_TOKENS` accepts 1–4096 output tokens (default 500). Both settings are validated; invalid values fail closed. The report agent has no tools, and each report call constructs a fresh agent so an expiring bearer key is not cached across reports.
 
 ### One-shot reporter smoke test
 
@@ -74,8 +74,8 @@ In PowerShell, the bearer token must already be supplied to this same process th
 if ([string]::IsNullOrWhiteSpace($env:AWS_BEARER_TOKEN_BEDROCK)) { throw "AWS_BEARER_TOKEN_BEDROCK is not set in this PowerShell process." }
 $env:AWS_REGION = "ap-southeast-2"
 $env:BEDROCK_MODEL_ID = "amazon.nova-micro-v1:0"
-$env:PHISHPILOT_BEDROCK_TIMEOUT_SECONDS = "45"
-$env:PHISHPILOT_BEDROCK_MAX_TOKENS = "150"
+$env:PHISHPILOT_BEDROCK_TIMEOUT_SECONDS = "3600"
+$env:PHISHPILOT_BEDROCK_MAX_TOKENS = "500"
 try {
     & .\.venv\Scripts\python.exe -m phishpilot.bedrock_report_smoke --confirm-live-call
     $smokeExitCode = $LASTEXITCODE
